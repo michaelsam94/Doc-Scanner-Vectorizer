@@ -17,8 +17,9 @@ object ScannerProcessor {
 
     /**
      * Highly optimized edge and boundary detection algorithm.
-     * Downsamples, runs Sobel gradient extraction, and computes optimal corners 
-     * using corner extreme projection.
+     * Integrates intelligent Otsu binarization and saturation filters to isolate 
+     * white paper sheets, using connected-component analysis for extreme noise immunity.
+     * Gracefully falls back to high-fidelity Sobel gradient calculation.
      */
     fun detectDocumentCorners(bitmap: Bitmap): DocumentCorners {
         val width = bitmap.width
@@ -35,14 +36,188 @@ object ScannerProcessor {
         sc.recycle()
         
         val gray = IntArray(sw * sh)
+        val sat = FloatArray(sw * sh)
         for (i in pixels.indices) {
             val p = pixels[i]
             val r = (p shr 16) and 0xff
             val g = (p shr 8) and 0xff
             val b = p and 0xff
             gray[i] = (r * 0.299f + g * 0.587f + b * 0.114f).toInt()
+            
+            val maxC = max(r, max(g, b))
+            val minC = min(r, min(g, b))
+            sat[i] = if (maxC > 0) (maxC - minC).toFloat() / maxC else 0f
         }
         
+        // 1. Dynamic Otsu Adaptive Thresholding on Grayscale values to isolate paper
+        val hist = IntArray(256)
+        for (v in gray) {
+            hist[v.coerceIn(0, 255)]++
+        }
+        val total = gray.size
+        var sum = 0f
+        for (t in 0..255) {
+            sum += t * hist[t]
+        }
+        var sumB = 0f
+        var wB = 0
+        var varMax = 0f
+        var thresholdOtsu = 127
+        for (t in 0..255) {
+            wB += hist[t]
+            if (wB == 0) continue
+            val wF = total - wB
+            if (wF == 0) break
+            sumB += t * hist[t].toFloat()
+            val mB = sumB / wB
+            val mF = (sum - sumB) / wF
+            val varBetween = wB.toFloat() * wF.toFloat() * (mB - mF) * (mB - mF)
+            if (varBetween > varMax) {
+                varMax = varBetween
+                thresholdOtsu = t
+            }
+        }
+        
+        val targetThreshold = thresholdOtsu.coerceIn(90, 195)
+        
+        // Define White Paper Mask (bright + low-to-moderate saturation for neutral colors)
+        val isWhitePaper = BooleanArray(sw * sh)
+        for (i in gray.indices) {
+            val gVal = gray[i]
+            val sVal = sat[i]
+            isWhitePaper[i] = (gVal >= targetThreshold && sVal < 0.35f) || (gVal > 185 && sVal < 0.45f)
+        }
+        
+        val mw = (sw * 0.04).toInt()
+        val mh = (sh * 0.04).toInt()
+        
+        // 2. Extract largest contiguous connected component of white paper pixels (removes table elements, hands, clutter)
+        val visited = BooleanArray(sw * sh)
+        var maxComponentPoints = ArrayList<Int>()
+        val queue = IntArray(sw * sh)
+        
+        for (y in mh until sh - mh) {
+            for (x in mw until sw - mw) {
+                val idx = y * sw + x
+                if (isWhitePaper[idx] && !visited[idx]) {
+                    var head = 0
+                    var tail = 0
+                    val component = ArrayList<Int>()
+                    
+                    queue[tail++] = idx
+                    visited[idx] = true
+                    
+                    while (head < tail) {
+                        val curr = queue[head++]
+                        component.add(curr)
+                        
+                        val cx = curr % sw
+                        val cy = curr / sw
+                        
+                        // 4-connected scan neighbors
+                        val neighbors = intArrayOf(curr - 1, curr + 1, curr - sw, curr + sw)
+                        val nxCoords = intArrayOf(cx - 1, cx + 1, cx, cx)
+                        val nyCoords = intArrayOf(cy, cy, cy - 1, cy + 1)
+                        
+                        for (n in 0 until 4) {
+                            val nIdx = neighbors[n]
+                            val nx = nxCoords[n]
+                            val ny = nyCoords[n]
+                            
+                            if (nx >= mw && nx < sw - mw && ny >= mh && ny < sh - mh) {
+                                if (isWhitePaper[nIdx] && !visited[nIdx]) {
+                                    visited[nIdx] = true
+                                    queue[tail++] = nIdx
+                                }
+                            }
+                        }
+                    }
+                    if (component.size > maxComponentPoints.size) {
+                        maxComponentPoints = component
+                    }
+                }
+            }
+        }
+        
+        // If the white paper component represents a plausible document size (> 5.5% of the viewport)
+        if (maxComponentPoints.size > (sw * sh) * 0.055) {
+            val largestSet = BooleanArray(sw * sh)
+            for (idx in maxComponentPoints) {
+                largestSet[idx] = true
+            }
+            
+            val isBoundary = BooleanArray(sw * sh)
+            for (idx in maxComponentPoints) {
+                val cx = idx % sw
+                val cy = idx / sw
+                if (cx > mw && cx < sw - mw - 1 && cy > mh && cy < sh - mh - 1) {
+                    if (!largestSet[idx - 1] || !largestSet[idx + 1] || 
+                        !largestSet[idx - sw] || !largestSet[idx + sw]) {
+                        isBoundary[idx] = true
+                    }
+                } else {
+                    isBoundary[idx] = true
+                }
+            }
+            
+            var minSum = Float.MAX_VALUE
+            var maxSum = -Float.MAX_VALUE
+            var minDiff = Float.MAX_VALUE
+            var maxDiff = -Float.MAX_VALUE
+            
+            var tl = DocPoint(0.15f, 0.15f)
+            var tr = DocPoint(0.85f, 0.15f)
+            var br = DocPoint(0.85f, 0.85f)
+            var bl = DocPoint(0.15f, 0.85f)
+            
+            var pointsFound = false
+            for (y in mh until sh - mh) {
+                for (x in mw until sw - mw) {
+                    val idx = y * sw + x
+                    if (isBoundary[idx]) {
+                        val px = x.toFloat() / sw
+                        val py = y.toFloat() / sh
+                        val sum = px + py
+                        val diff = px - py
+                        
+                        if (sum < minSum) {
+                            minSum = sum
+                            tl = DocPoint(px, py)
+                            pointsFound = true
+                        }
+                        if (sum > maxSum) {
+                            maxSum = sum
+                            br = DocPoint(px, py)
+                        }
+                        if (diff > maxDiff) {
+                            maxDiff = diff
+                            tr = DocPoint(px, py)
+                        }
+                        if (diff < minDiff) {
+                            minDiff = diff
+                            bl = DocPoint(px, py)
+                        }
+                    }
+                }
+            }
+            
+            if (pointsFound) {
+                val diag1 = hypot((br.x - tl.x).toDouble(), (br.y - tl.y).toDouble())
+                val diag2 = hypot((tr.x - bl.x).toDouble(), (tr.y - bl.y).toDouble())
+                
+                if (diag1 > 0.35f && diag2 > 0.35f) {
+                    val pad = 0.01f // Clean padding buffer for cropping
+                    return DocumentCorners(
+                        topLeft = DocPoint(max(0.01f, tl.x - pad), max(0.01f, tl.y - pad)),
+                        topRight = DocPoint(min(0.99f, tr.x + pad), max(0.01f, tr.y - pad)),
+                        bottomRight = DocPoint(min(0.99f, br.x + pad), min(0.99f, br.y + pad)),
+                        bottomLeft = DocPoint(max(0.01f, bl.x - pad), min(0.99f, bl.y + pad))
+                    )
+                }
+            }
+        }
+        
+        // 3. Fallback: Sobel Intensity Gradients (for high-contrast/colored sheets or dark/shadowed setups)
         val grad = FloatArray(sw * sh)
         var maxGrad = 0f
         
@@ -65,10 +240,6 @@ object ScannerProcessor {
         
         val threshold = maxGrad * 0.22f
         val points = mutableListOf<Pair<Int, Int>>()
-        
-        // Discard 4% outer margin to prevent smartphone casing/shadows from locking
-        val mw = (sw * 0.04).toInt()
-        val mh = (sh * 0.04).toInt()
         
         for (y in mh until sh - mh) {
             for (x in mw until sw - mw) {
@@ -118,7 +289,6 @@ object ScannerProcessor {
             val diag2 = hypot((tr.x - bl.x).toDouble(), (tr.y - bl.y).toDouble())
             
             if (diag1 > 0.35f && diag2 > 0.35f) {
-                // Add tiny margin buffer of 1.5% for ease of crop
                 val pad = 0.015f
                 return DocumentCorners(
                     topLeft = DocPoint(max(0f, tl.x - pad), max(0f, tl.y - pad)),
