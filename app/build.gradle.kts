@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-  namespace = "com.michael.docscannervectorizer"
+  namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.michael.docscannervectorizer"
+    applicationId = "com.aistudio.docscanner.kywzpq"
     minSdk = 24
     targetSdk = 36
     versionCode = 1
