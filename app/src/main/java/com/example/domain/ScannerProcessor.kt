@@ -718,16 +718,16 @@ object ScannerProcessor {
             if (isMagicMode) {
                 // Boost colorful ink fidelity and suppress page creases
                 val gray = (r * 0.299f + g * 0.587f + b * 0.114f).toInt()
-                val satFactor = 1.45f
+                val satFactor = 1.65f
                 
-                r = max(0, min(255, (gray + (r - gray) * satFactor).toInt()))
-                g = max(0, min(255, (gray + (g - gray) * satFactor).toInt()))
-                b = max(0, min(255, (gray + (b - gray) * satFactor).toInt()))
+                val rSat = max(0, min(255, (gray + (r - gray) * satFactor).toInt()))
+                val gSat = max(0, min(255, (gray + (g - gray) * satFactor).toInt()))
+                val bSat = max(0, min(255, (gray + (b - gray) * satFactor).toInt()))
                 
-                // Advanced high contrast ink stretch
-                r = stretchContrast(r, 65, 215)
-                g = stretchContrast(g, 65, 215)
-                b = stretchContrast(b, 65, 215)
+                // Advanced high contrast non-linear ink stretch specifically engineered for Magic Color
+                r = stretchMagicColor(rSat)
+                g = stretchMagicColor(gSat)
+                b = stretchMagicColor(bSat)
             } else {
                 // Normal natural lighting flattened shadow removal
                 r = stretchContrast(r, 75, 205)
@@ -740,7 +740,7 @@ object ScannerProcessor {
         
         val dest = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val finalOut = if (isMagicMode) {
-            applyLaplacianSharpening(out, w, h, strength = 0.35f)
+            applyLaplacianSharpening(out, w, h, strength = 0.45f)
         } else {
             out
         }
@@ -808,6 +808,18 @@ object ScannerProcessor {
         if (v >= high) return 255
         if (v <= low) return max(0, (v * 0.4f).toInt())
         return ((v - low).toFloat() / (high - low) * 255).toInt().coerceIn(0, 255)
+    }
+
+    private fun stretchMagicColor(v: Int): Int {
+        val low = 70
+        val high = 192
+        if (v >= high) return 255
+        if (v <= low) return (v * 0.10f).toInt()
+        val t = (v - low).toDouble() / (high - low).toDouble()
+        val tMapped = Math.pow(t, 2.2)
+        val offset = low * 0.10
+        val scale = 255.0 - offset
+        return (tMapped * scale + offset).toInt().coerceIn(0, 255)
     }
 
     /**
