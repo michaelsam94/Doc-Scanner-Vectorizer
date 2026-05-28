@@ -18,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.ui.CameraScreen
+import com.example.ui.HomeScreen
 import com.example.ui.MainViewModel
 import com.example.ui.ReviewScreen
 
@@ -40,8 +41,19 @@ class MainActivity : ComponentActivity() {
                     val navController = rememberNavController()
                     NavHost(
                         navController = navController,
-                        startDestination = "camera"
+                        startDestination = "home"
                     ) {
+                        composable("home") {
+                            HomeScreen(
+                                viewModel = viewModel,
+                                onNavigateToCamera = {
+                                    navController.navigate("camera")
+                                },
+                                onNavigateToReview = {
+                                    navController.navigate("review")
+                                }
+                            )
+                        }
                         composable("camera") {
                             CameraScreen(
                                 viewModel = viewModel,
@@ -55,6 +67,11 @@ class MainActivity : ComponentActivity() {
                                 viewModel = viewModel,
                                 onNavigateBackToCamera = {
                                     navController.popBackStack()
+                                },
+                                onNavigateToHome = {
+                                    navController.navigate("home") {
+                                        popUpTo("home") { inclusive = false }
+                                    }
                                 }
                             )
                         }

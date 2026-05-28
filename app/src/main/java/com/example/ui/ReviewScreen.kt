@@ -41,6 +41,7 @@ import java.io.FileOutputStream
 fun ReviewScreen(
     viewModel: MainViewModel,
     onNavigateBackToCamera: () -> Unit,
+    onNavigateToHome: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -57,7 +58,7 @@ fun ReviewScreen(
                 navigationIcon = {
                     IconButton(onClick = {
                         viewModel.reset()
-                        onNavigateBackToCamera()
+                        onNavigateToHome()
                     }) {
                         Icon(imageVector = Icons.Filled.ArrowBack, contentDescription = "Back screen")
                     }
@@ -71,6 +72,17 @@ fun ReviewScreen(
                         modifier = Modifier.testTag("retake_action_button")
                     ) {
                         Icon(imageVector = Icons.Filled.Refresh, contentDescription = "Re-scan document")
+                    }
+                    
+                    IconButton(
+                        onClick = {
+                            viewModel.saveScannedDocument(context) {
+                                onNavigateToHome()
+                            }
+                        },
+                        modifier = Modifier.testTag("save_action_button")
+                    ) {
+                        Icon(imageVector = Icons.Filled.Check, contentDescription = "Save document")
                     }
                 }
             )
@@ -205,9 +217,9 @@ fun ReviewScreen(
                     .padding(start = 16.dp, end = 16.dp, bottom = 28.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Button(
+                OutlinedButton(
                     onClick = {
-                        val active = filteredBitmap ?: croppedBitmap ?: return@Button
+                        val active = filteredBitmap ?: croppedBitmap ?: return@OutlinedButton
                         try {
                             // Save file to app cache directory and write via FileProvider
                             val cacheDir = File(context.cacheDir, "scans")
@@ -239,15 +251,34 @@ fun ReviewScreen(
                         .weight(1f)
                         .height(48.dp)
                         .testTag("share_and_save_action"),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Filled.Share, contentDescription = "Share documents icon button")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Share & Export", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        viewModel.saveScannedDocument(context) {
+                            onNavigateToHome()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("save_and_exit_action"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
                     ),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Filled.Share, contentDescription = "Share documents icon button")
+                        Icon(imageVector = Icons.Filled.Check, contentDescription = "Save document scan")
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Share & Export", fontWeight = FontWeight.Black)
+                        Text("Save Scan", fontWeight = FontWeight.Black)
                     }
                 }
             }

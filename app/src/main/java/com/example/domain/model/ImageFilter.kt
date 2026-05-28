@@ -5,9 +5,5 @@ enum class ImageFilter {
     GRAYSCALE,
     MONOCHROME,
     SHADOW_REMOVED,
-    MAGIC_COLOR,
-    ENHANCED,       // CLAHE adaptive contrast
-    SHARP,          // Unsharp mask sharpening
-    DENOISED,       // Bilateral filter denoising
-    COLOR_CORRECT   // Auto white balance + gamma
+    MAGIC_COLOR
 }
