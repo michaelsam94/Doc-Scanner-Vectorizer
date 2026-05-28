@@ -4,101 +4,58 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavType
+import androidx.compose.ui.graphics.Color
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import com.example.di.ViewModelFactory
-import com.example.feature.adjust.AdjustScreen
-import com.example.feature.adjust.AdjustViewModel
-import com.example.feature.gallery.GalleryScreen
-import com.example.feature.gallery.GalleryViewModel
-import com.example.feature.scan.ScanScreen
-import com.example.feature.scan.ScanViewModel
-import com.example.feature.vectorize.VectorizeScreen
-import com.example.feature.vectorize.VectorizeViewModel
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.CameraScreen
+import com.example.ui.MainViewModel
+import com.example.ui.ReviewScreen
 
 class MainActivity : ComponentActivity() {
-    
+
+    private val viewModel: MainViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Edge-to-edge support for full screen cameras
         enableEdgeToEdge()
 
-        // Get safe access to manual di container
-        val appContainer = (application as ScannerApplication).container
-        val factory = ViewModelFactory(appContainer)
-
         setContent {
-            MyApplicationTheme {
-                val navController = rememberNavController()
-
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+            ScannerTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    val navController = rememberNavController()
                     NavHost(
                         navController = navController,
-                        startDestination = "gallery",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
+                        startDestination = "camera"
                     ) {
-                        // Document list/summary screen
-                        composable("gallery") {
-                            val galleryViewModel: GalleryViewModel = viewModel(factory = factory)
-                            GalleryScreen(
-                                viewModel = galleryViewModel,
-                                onNavigateToScan = { navController.navigate("scan") },
-                                onNavigateToAdjust = { docId -> navController.navigate("adjust/$docId") }
+                        composable("camera") {
+                            CameraScreen(
+                                viewModel = viewModel,
+                                onNavigateToReview = {
+                                    navController.navigate("review")
+                                }
                             )
                         }
-
-                        // Boundary crop & capture screen
-                        composable("scan") {
-                            val scanViewModel: ScanViewModel = viewModel(factory = factory)
-                            ScanScreen(
-                                viewModel = scanViewModel,
-                                onNavigateToAdjust = { docId -> 
-                                    // Pop back to gallery or clear scan so back stack is pristine
-                                    navController.navigate("adjust/$docId") {
-                                        popUpTo("scan") { inclusive = true }
-                                    }
-                                },
-                                onBack = { navController.popBackStack() }
-                            )
-                        }
-
-                        // Rotate, enhance & filter screen
-                        composable(
-                            route = "adjust/{documentId}",
-                            arguments = listOf(navArgument("documentId") { type = NavType.StringType })
-                        ) { backStackEntry ->
-                            val documentId = backStackEntry.arguments?.getString("documentId") ?: ""
-                            val adjustViewModel: AdjustViewModel = viewModel(factory = factory)
-                            AdjustScreen(
-                                documentId = documentId,
-                                viewModel = adjustViewModel,
-                                onNavigateToVectorize = { docId -> navController.navigate("vectorize/$docId") },
-                                onBack = { navController.popBackStack() }
-                            )
-                        }
-
-                        // SVG and transparent PNG exporter
-                        composable(
-                            route = "vectorize/{documentId}",
-                            arguments = listOf(navArgument("documentId") { type = NavType.StringType })
-                        ) { backStackEntry ->
-                            val documentId = backStackEntry.arguments?.getString("documentId") ?: ""
-                            val vectorizeViewModel: VectorizeViewModel = viewModel(factory = factory)
-                            VectorizeScreen(
-                                documentId = documentId,
-                                viewModel = vectorizeViewModel,
-                                onBack = { navController.popBackStack() }
+                        composable("review") {
+                            ReviewScreen(
+                                viewModel = viewModel,
+                                onNavigateBackToCamera = {
+                                    navController.popBackStack()
+                                }
                             )
                         }
                     }
@@ -106,4 +63,39 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+@Composable
+fun ScannerTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    val darkColorPalette = darkColorScheme(
+        primary = Color(0xFF10B981), // Emerald/Green accent representing Camera smart overlays
+        onPrimary = Color.Black,
+        secondary = Color(0xFF14B8A6),
+        onSecondary = Color.Black,
+        background = Color(0xFF0F172A), // Slate 900
+        surface = Color(0xFF1E293B),     // Slate 800
+        onBackground = Color(0xFFF8FAFC),
+        onSurface = Color(0xFFF8FAFC)
+    )
+
+    val lightColorPalette = lightColorScheme(
+        primary = Color(0xFF059669),
+        onPrimary = Color.White,
+        secondary = Color(0xFF0D9488),
+        onSecondary = Color.White,
+        background = Color(0xFFF8FAFC),
+        surface = Color(0xFFFFFFFF),
+        onBackground = Color(0xFF0F172A),
+        onSurface = Color(0xFF0F172A)
+    )
+
+    val colors = if (darkTheme) darkColorPalette else lightColorPalette
+
+    MaterialTheme(
+        colorScheme = colors,
+        content = content
+    )
 }
