@@ -1,0 +1,3 @@
+package com.michael.docscannervectorizer.playstore
+
+interface PlayStoreScreenshotTests

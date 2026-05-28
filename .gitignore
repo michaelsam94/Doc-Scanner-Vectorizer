@@ -1,0 +1,16 @@
+.DS_Store
+.gradle/
+.kotlin/
+build/
+**/build/
+local.properties
+key.properties
+keystore.properties
+*.jks
+*.keystore
+*.pem
+*.key
+release/
+.build-outputs/
+debug.keystore
+debug.keystore.base64

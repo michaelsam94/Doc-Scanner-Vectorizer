@@ -1,0 +1,40 @@
+<h2>What should the new CamScanner-like default optimize for?</h2>
+<p class="subtitle">Pick the output style you want users to see first after crop and perspective correction.</p>
+
+<div class="cards">
+  <div class="card" data-choice="balanced_auto" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:180px;background:linear-gradient(135deg,#f8fafc,#dbeafe);display:flex;align-items:center;justify-content:center;color:#0f172a;font-weight:800;font-size:28px;letter-spacing:0">
+        AUTO
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Balanced Auto</h3>
+      <p>Whiten paper, remove shadows, keep useful color, sharpen text. Best default for mixed documents.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="text_black_white" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:180px;background:#fff;display:flex;align-items:center;justify-content:center;color:#111827;font-weight:900;font-size:30px;letter-spacing:0;border:1px solid #e5e7eb">
+        B/W TEXT
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Black & White Text</h3>
+      <p>Maximum contrast with adaptive thresholding. Great for printed forms, receipts, and OCR.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="color_notes" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:180px;background:linear-gradient(135deg,#ffffff,#fef3c7);display:flex;align-items:center;justify-content:center;color:#047857;font-weight:900;font-size:28px;letter-spacing:0">
+        COLOR
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Color Notes</h3>
+      <p>Preserve pen colors, stamps, diagrams, and highlights while still cleaning paper and lighting.</p>
+    </div>
+  </div>
+</div>

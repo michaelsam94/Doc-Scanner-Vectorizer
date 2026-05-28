@@ -1,18 +1,36 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.roborazzi)
+}
+
+if (gradle.startParameter.taskNames.any {
+        it.equals("generatePlayStoreAssets", ignoreCase = true) ||
+            it.contains("Roborazzi", ignoreCase = true)
+    }
+) {
+    extra["screenshot"] = true
+}
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
-    namespace = "com.example"
-    compileSdk = 34
+    namespace = "com.michael.docscannervectorizer"
+    compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example"
+        applicationId = "com.michael.docscannervectorizer"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -20,9 +38,19 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            keyAlias = keystoreProperties["keyAlias"] as String?
+            keyPassword = keystoreProperties["keyPassword"] as String?
+            storeFile = (keystoreProperties["storeFile"] as String?)?.let { rootProject.file(it) }
+            storePassword = keystoreProperties["storePassword"] as String?
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -48,6 +76,37 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                val screenshotTests = project.hasProperty("screenshot")
+                it.inputs.property("screenshotTestsEnabled", screenshotTests)
+                if (screenshotTests) {
+                    it.maxParallelForks = 1
+                    it.maxHeapSize = "2048m"
+                    it.systemProperty("robolectric.pixelCopyRenderMode", "hardware")
+                }
+                it.useJUnit {
+                    if (screenshotTests) {
+                        includeCategories("com.michael.docscannervectorizer.playstore.PlayStoreScreenshotTests")
+                    } else {
+                        excludeCategories("com.michael.docscannervectorizer.playstore.PlayStoreScreenshotTests")
+                    }
+                }
+            }
+        }
+    }
+}
+
+roborazzi {
+    outputDir.set(file("${rootProject.projectDir}/play-store"))
+}
+
+tasks.register("generatePlayStoreAssets") {
+    group = "publishing"
+    description = "Generate Play Store screenshots and feature graphic via Roborazzi"
+    dependsOn("recordRoborazziDebug")
 }
 
 dependencies {
@@ -72,6 +131,11 @@ dependencies {
     implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
+    testImplementation(libs.roborazzi.junit.rule)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
