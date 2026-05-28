@@ -68,17 +68,33 @@ class MainViewModel : ViewModel() {
             val detected = withContext(Dispatchers.Default) {
                 ScannerProcessor.detectDocumentCorners(bitmap)
             }
-            _corners.value = detected
-
+            
             val last = lastCorners
-            if (last != null) {
+            val finalCorners = if (last != null) {
                 val d1 = dist(detected.topLeft, last.topLeft)
                 val d2 = dist(detected.topRight, last.topRight)
                 val d3 = dist(detected.bottomRight, last.bottomRight)
                 val d4 = dist(detected.bottomLeft, last.bottomLeft)
                 val totalDelta = d1 + d2 + d3 + d4
+                
+                // Adaptive temporal smoothing factor: smaller delta -> smoother transition, larger delta -> fast response
+                val alpha = if (totalDelta < 0.08f) 0.18f else if (totalDelta < 0.25f) 0.45f else 0.85f
+                smoothCorners(detected, last, alpha)
+            } else {
+                detected
+            }
+            
+            _corners.value = finalCorners
+            
+            if (last != null) {
+                val d1 = dist(finalCorners.topLeft, last.topLeft)
+                val d2 = dist(finalCorners.topRight, last.topRight)
+                val d3 = dist(finalCorners.bottomRight, last.bottomRight)
+                val d4 = dist(finalCorners.bottomLeft, last.bottomLeft)
+                val totalDelta = d1 + d2 + d3 + d4
 
-                if (totalDelta < STABILITY_THRESHOLD) {
+                val thresholdMultiplier = 0.9f
+                if (totalDelta < STABILITY_THRESHOLD * thresholdMultiplier) {
                     stableFrameCount++
                     _isStabilizing.value = true
                     _stabilityProgress.value = stableFrameCount.toFloat() / REQUIRED_STABLE_FRAMES
@@ -90,9 +106,9 @@ class MainViewModel : ViewModel() {
                         // Keep a reference to the captured bitmap
                         _capturedBitmap.value = bitmap
                         
-                        // Crop immediately
+                        // Crop immediately using high-fidelity smoothed corners
                         val cropped = withContext(Dispatchers.Default) {
-                            ScannerProcessor.applyPerspectiveCorrection(bitmap, detected)
+                            ScannerProcessor.applyPerspectiveCorrection(bitmap, finalCorners)
                         }
                         _croppedBitmap.value = cropped
                         
@@ -117,9 +133,26 @@ class MainViewModel : ViewModel() {
             } else {
                 bitmap.recycle()
             }
-            lastCorners = detected
+            lastCorners = finalCorners
             isAnalyzing = false
         }
+    }
+
+    private fun smoothCorners(newCorners: DocumentCorners, historicalCorners: DocumentCorners?, alpha: Float): DocumentCorners {
+        if (historicalCorners == null) return newCorners
+        return DocumentCorners(
+            topLeft = lerp(historicalCorners.topLeft, newCorners.topLeft, alpha),
+            topRight = lerp(historicalCorners.topRight, newCorners.topRight, alpha),
+            bottomRight = lerp(historicalCorners.bottomRight, newCorners.bottomRight, alpha),
+            bottomLeft = lerp(historicalCorners.bottomLeft, newCorners.bottomLeft, alpha)
+        )
+    }
+
+    private fun lerp(p1: DocPoint, p2: DocPoint, alpha: Float): DocPoint {
+        return DocPoint(
+            x = p1.x + alpha * (p2.x - p1.x),
+            y = p1.y + alpha * (p2.y - p1.y)
+        )
     }
 
     private fun dist(p1: DocPoint, p2: DocPoint): Float {
