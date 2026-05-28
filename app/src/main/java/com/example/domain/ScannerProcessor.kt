@@ -25,8 +25,8 @@ object ScannerProcessor {
         val height = bitmap.height
         
         // Multi-Scale downsampled representation for ultra-responsive live processing
-        val targetWidth = 160
-        val targetHeight = 160
+        val targetWidth = 220
+        val targetHeight = 220
         val sc = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, false)
         val sw = sc.width
         val sh = sc.height
@@ -96,19 +96,27 @@ object ScannerProcessor {
         
         val adaptiveThreshold = min(paperThreshold, thresholdOtsu.coerceIn(80, 180))
         
-        // High-contrast Sobel gradient space
+        // --- TEXT ELIMINATION SMOOTHING ---
+        // Apply spatial box blur to gray channel to wash out characters and small letters,
+        // leaving ONLY the massive outer document structure boundaries for Sobel!
+        val blurredGray = IntArray(sw * sh)
+        blurGrayHorizontal(gray, blurredGray, sw, sh, 2)
+        val finalGray = IntArray(sw * sh)
+        blurGrayVertical(blurredGray, finalGray, sw, sh, 2)
+        
+        // High-contrast Sobel gradient space calculated on blurred gray
         val grad = FloatArray(sw * sh)
         var maxGrad = 0f
         for (y in 1 until sh - 1) {
             for (x in 1 until sw - 1) {
                 val idx = y * sw + x
-                val gx = (gray[idx - 1 + sw] - gray[idx - 1 - sw] + 
-                         2 * gray[idx + sw] - 2 * gray[idx - sw] + 
-                         gray[idx + 1 + sw] - gray[idx + 1 - sw])
+                val gx = (finalGray[idx - 1 + sw] - finalGray[idx - 1 - sw] + 
+                         2 * finalGray[idx + sw] - 2 * finalGray[idx - sw] + 
+                         finalGray[idx + 1 + sw] - finalGray[idx + 1 - sw])
                          
-                val gy = (gray[idx - 1 - sw] - gray[idx + 1 - sw] + 
-                         2 * gray[idx - 1] - 2 * gray[idx + 1] + 
-                         gray[idx - 1 + sw] - gray[idx + 1 + sw])
+                val gy = (finalGray[idx - 1 - sw] - finalGray[idx + 1 - sw] + 
+                         2 * finalGray[idx - 1] - 2 * finalGray[idx + 1] + 
+                         finalGray[idx - 1 + sw] - finalGray[idx + 1 + sw])
                 
                 val mag = sqrt((gx * gx + gy * gy).toDouble()).toFloat()
                 grad[idx] = mag
@@ -175,94 +183,176 @@ object ScannerProcessor {
             }
         }
         
-        // If the white paper component represents a plausible document size (>= 6% of viewport)
-        if (maxComponent.size >= (sw * sh) * 0.06) {
-            val blobSet = BooleanArray(sw * sh)
+        // Determine document centroid
+        var cx = sw / 2f
+        var cy = sh / 2f
+        val isPaperFound = maxComponent.size >= (sw * sh) * 0.05
+        if (isPaperFound) {
+            var sumX = 0.0
+            var sumY = 0.0
+            for (idx in maxComponent) {
+                sumX += idx % sw
+                sumY += idx / sw
+            }
+            cx = (sumX / maxComponent.size).toFloat()
+            cy = (sumY / maxComponent.size).toFloat()
+        }
+        
+        // Collect candidate boundary points from TWO highly robust sources:
+        // 1. Blob outer boundary perimeter
+        // 2. Centroid-outwards Active-Contour profile ray-casting
+        val boundaryPoints = ArrayList<Pair<Float, Float>>()
+        
+        val blobSet = BooleanArray(sw * sh)
+        if (isPaperFound) {
             for (idx in maxComponent) {
                 blobSet[idx] = true
             }
-            
-            // Scan columns to collect Top and Bottom outline borders
-            val topPoints = ArrayList<Pair<Float, Float>>()
-            val bottomPoints = ArrayList<Pair<Float, Float>>()
-            for (x in marginW until sw - marginW) {
-                var firstY = -1
-                var lastY = -1
-                for (y in marginH until sh - marginH) {
-                    if (blobSet[y * sw + x]) {
-                        if (firstY == -1) firstY = y
-                        lastY = y
+            for (idx in maxComponent) {
+                val x = idx % sw
+                val y = idx / sw
+                if (x > marginW && x < sw - marginW - 1 && y > marginH && y < sh - marginH - 1) {
+                    val isPerimeter = !blobSet[idx - 1] || !blobSet[idx + 1] || 
+                                      !blobSet[idx - sw] || !blobSet[idx + sw]
+                    if (isPerimeter) {
+                        boundaryPoints.add(Pair(x.toFloat(), y.toFloat()))
                     }
                 }
-                if (firstY != -1) {
-                    topPoints.add(Pair(x.toFloat(), firstY.toFloat()))
-                    bottomPoints.add(Pair(x.toFloat(), lastY.toFloat()))
+            }
+        }
+        
+        // Active-Contour Ray-Casting (90 rays = 4-degree angular resolution)
+        val numRays = 90
+        for (r in 0 until numRays) {
+            val angleRad = (r * (360f / numRays)) * (Math.PI / 180.0)
+            val cos = Math.cos(angleRad).toFloat()
+            val sin = Math.sin(angleRad).toFloat()
+            
+            val maxSteps = 400
+            var actualSteps = 0
+            for (step in 1..maxSteps) {
+                val rx = cx + step * cos
+                val ry = cy + step * sin
+                if (rx < marginW.toFloat() || rx >= (sw - marginW).toFloat() || 
+                    ry < marginH.toFloat() || ry >= (sh - marginH).toFloat()) {
+                    actualSteps = step - 1
+                    break
                 }
             }
             
-            // Scan rows to collect Left and Right outline borders
-            val leftPoints = ArrayList<Pair<Float, Float>>()
-            val rightPoints = ArrayList<Pair<Float, Float>>()
-            for (y in marginH until sh - marginH) {
-                var firstX = -1
-                var lastX = -1
-                for (x in marginW until sw - marginW) {
-                    if (blobSet[y * sw + x]) {
-                        if (firstX == -1) firstX = x
-                        lastX = x
-                    }
-                }
-                if (firstX != -1) {
-                    leftPoints.add(Pair(firstX.toFloat(), y.toFloat()))
-                    rightPoints.add(Pair(lastX.toFloat(), y.toFloat()))
+            if (actualSteps < 15) continue
+            
+            val rGray = FloatArray(actualSteps)
+            val rGrad = FloatArray(actualSteps)
+            val rX = FloatArray(actualSteps)
+            val rY = FloatArray(actualSteps)
+            
+            for (j in 0 until actualSteps) {
+                val rx = cx + j * cos
+                val ry = cy + j * sin
+                rX[j] = rx
+                rY[j] = ry
+                
+                val ix = rx.toInt().coerceIn(0, sw - 1)
+                val iy = ry.toInt().coerceIn(0, sh - 1)
+                rGray[j] = finalGray[iy * sw + ix].toFloat()
+                rGrad[j] = grad[iy * sw + ix]
+            }
+            
+            var bestJ = -1
+            var bestScore = -1f
+            val windowSize = 4
+            for (j in windowSize until actualSteps - windowSize) {
+                var insideSum = 0f
+                for (k in (j - windowSize) until j) insideSum += rGray[k]
+                val avgInside = insideSum / windowSize
+                
+                var outsideSum = 0f
+                for (k in (j + 1)..(j + windowSize)) outsideSum += rGray[k]
+                val avgOutside = outsideSum / windowSize
+                
+                val contrast = Math.abs(avgInside - avgOutside)
+                // Score is a weighted combination of gradient spike and intensity boundary contrast
+                val score = rGrad[j] * 0.45f + contrast * 0.55f
+                if (score > bestScore) {
+                    bestScore = score
+                    bestJ = j
                 }
             }
             
-            // Fit robust boundaries using RANSAC to completely reject clutter, fingers, and background transitions
-            val topLine = fitLineYasX(topPoints, tolerance = 2.5f)
-            val bottomLine = fitLineYasX(bottomPoints, tolerance = 2.5f)
-            val leftLine = fitLineXasY(leftPoints, tolerance = 2.5f)
-            val rightLine = fitLineXasY(rightPoints, tolerance = 2.5f)
+            if (bestJ != -1 && bestScore > 8.5f) {
+                boundaryPoints.add(Pair(rX[bestJ], rY[bestJ]))
+            }
+        }
+        
+        // Classify candidate boundary points geometrically by angle around the centroid into 4 distinct quadrants (sectors)
+        // This fully enforces the rigid rectangle structure, as points on each side are fit independently!
+        val sectorTop = ArrayList<Pair<Float, Float>>()
+        val sectorRight = ArrayList<Pair<Float, Float>>()
+        val sectorBottom = ArrayList<Pair<Float, Float>>()
+        val sectorLeft = ArrayList<Pair<Float, Float>>()
+        
+        for (pt in boundaryPoints) {
+            val dx = pt.first - cx
+            val dy = pt.second - cy
+            val angle = Math.atan2(dy.toDouble(), dx.toDouble())
             
-            if (topLine != null && bottomLine != null && leftLine != null && rightLine != null) {
-                val (mT, cT) = topLine
-                val (mB, cB) = bottomLine
-                val (mL, cL) = leftLine
-                val (mR, cR) = rightLine
-                
-                // Solve mathematical intersection of 4 straight lines to produce mathematically pure corners
-                val denomTL = 1f - mL * mT
-                val tlX = if (Math.abs(denomTL) > 1e-4f) (mL * cT + cL) / denomTL else cL
-                val tlY = mT * tlX + cT
-                
-                val denomTR = 1f - mR * mT
-                val trX = if (Math.abs(denomTR) > 1e-4f) (mR * cT + cR) / denomTR else cR
-                val trY = mT * trX + cT
-                
-                val denomBL = 1f - mL * mB
-                val blX = if (Math.abs(denomBL) > 1e-4f) (mL * cB + cL) / denomBL else cL
-                val blY = mB * blX + cB
-                
-                val denomBR = 1f - mR * mB
-                val brX = if (Math.abs(denomBR) > 1e-4f) (mR * cB + cR) / denomBR else cR
-                val brY = mB * brX + cB
-                
-                // Relative normal coordinates within viewport
-                val normX = 1f / sw
-                val normY = 1f / sh
-                val pad = 0.012f
-                
-                val pTL = DocPoint((tlX * normX - pad).coerceIn(0f, 0.9f), (tlY * normY - pad).coerceIn(0f, 0.9f))
-                val pTR = DocPoint((trX * normX + pad).coerceIn(0.1f, 1f), (trY * normY - pad).coerceIn(0f, 0.9f))
-                val pBR = DocPoint((brX * normX + pad).coerceIn(0.1f, 1f), (brY * normY + pad).coerceIn(0.1f, 1f))
-                val pBL = DocPoint((blX * normX - pad).coerceIn(0f, 0.9f), (blY * normY + pad).coerceIn(0.1f, 1f))
-                
-                val diag1 = hypot((pBR.x - pTL.x).toDouble(), (pBR.y - pTL.y).toDouble())
-                val diag2 = hypot((pTR.x - pBL.x).toDouble(), (pTR.y - pBL.y).toDouble())
-                
-                if (diag1 > 0.38f && diag2 > 0.38f) {
-                    return DocumentCorners(pTL, pTR, pBR, pBL)
-                }
+            if (angle >= -3.0 * Math.PI / 4.0 && angle < -Math.PI / 4.0) {
+                sectorTop.add(pt)
+            } else if (angle >= -Math.PI / 4.0 && angle < Math.PI / 4.0) {
+                sectorRight.add(pt)
+            } else if (angle >= Math.PI / 4.0 && angle < 3.0 * Math.PI / 4.0) {
+                sectorBottom.add(pt)
+            } else {
+                sectorLeft.add(pt)
+            }
+        }
+        
+        // Fit robust boundaries using RANSAC to completely reject clutter, fingers, and background transitions
+        val topLine = fitLineYasX(sectorTop, tolerance = 2.0f)
+        val bottomLine = fitLineYasX(sectorBottom, tolerance = 2.0f)
+        val leftLine = fitLineXasY(sectorLeft, tolerance = 2.0f)
+        val rightLine = fitLineXasY(sectorRight, tolerance = 2.0f)
+        
+        if (topLine != null && bottomLine != null && leftLine != null && rightLine != null) {
+            val (mT, cT) = topLine
+            val (mB, cB) = bottomLine
+            val (mL, cL) = leftLine
+            val (mR, cR) = rightLine
+            
+            // Solve mathematical intersection of 4 straight lines to produce mathematically pure corners
+            val denomTL = 1f - mL * mT
+            val tlX = if (Math.abs(denomTL) > 1e-4f) (mL * cT + cL) / denomTL else cL
+            val tlY = mT * tlX + cT
+            
+            val denomTR = 1f - mR * mT
+            val trX = if (Math.abs(denomTR) > 1e-4f) (mR * cT + cR) / denomTR else cR
+            val trY = mT * trX + cT
+            
+            val denomBL = 1f - mL * mB
+            val blX = if (Math.abs(denomBL) > 1e-4f) (mL * cB + cL) / denomBL else cL
+            val blY = mB * blX + cB
+            
+            val denomBR = 1f - mR * mB
+            val brX = if (Math.abs(denomBR) > 1e-4f) (mR * cB + cR) / denomBR else cR
+            val brY = mB * brX + cB
+            
+            // Relative normal coordinates within viewport
+            val normX = 1f / sw
+            val normY = 1f / sh
+            val pad = 0.012f
+            
+            val pTL = DocPoint((tlX * normX - pad).coerceIn(0f, 0.9f), (tlY * normY - pad).coerceIn(0f, 0.9f))
+            val pTR = DocPoint((trX * normX + pad).coerceIn(0.1f, 1f), (trY * normY - pad).coerceIn(0f, 0.9f))
+            val pBR = DocPoint((brX * normX + pad).coerceIn(0.1f, 1f), (brY * normY + pad).coerceIn(0.1f, 1f))
+            val pBL = DocPoint((blX * normX - pad).coerceIn(0f, 0.9f), (blY * normY + pad).coerceIn(0.1f, 1f))
+            
+            val diag1 = hypot((pBR.x - pTL.x).toDouble(), (pBR.y - pTL.y).toDouble())
+            val diag2 = hypot((pTR.x - pBL.x).toDouble(), (pTR.y - pBL.y).toDouble())
+            
+            // Geometric convexity verification to ensure we have a mathematically valid quadrilateral
+            if (diag1 > 0.38f && diag2 > 0.38f && isConvex(pTL, pTR, pBR, pBL)) {
+                return DocumentCorners(pTL, pTR, pBR, pBL)
             }
         }
         
@@ -270,6 +360,56 @@ object ScannerProcessor {
         return getResilientGradientFallback(sw, sh, gray, grad)
     }
     
+    private fun blurGrayHorizontal(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val div = r * 2 + 1
+        for (y in 0 until h) {
+            var sum = 0
+            for (currX in -r..r) {
+                sum += src[y * w + currX.coerceIn(0, w - 1)]
+            }
+            dst[y * w] = sum / div
+            
+            for (x in 1 until w) {
+                val prev = x - 1 - r
+                val next = x + r
+                sum += src[y * w + next.coerceIn(0, w - 1)] - src[y * w + prev.coerceIn(0, w - 1)]
+                dst[y * w + x] = sum / div
+            }
+        }
+    }
+
+    private fun blurGrayVertical(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val div = r * 2 + 1
+        for (x in 0 until w) {
+            var sum = 0
+            for (currY in -r..r) {
+                sum += src[currY.coerceIn(0, h - 1) * w + x]
+            }
+            dst[x] = sum / div
+            
+            for (y in 1 until h) {
+                val prev = y - 1 - r
+                val next = y + r
+                sum += src[next.coerceIn(0, h - 1) * w + x] - src[prev.coerceIn(0, h - 1) * w + x]
+                dst[y * w + x] = sum / div
+            }
+        }
+    }
+
+    private fun isConvex(tl: DocPoint, tr: DocPoint, br: DocPoint, bl: DocPoint): Boolean {
+        fun crossProduct(ax: Float, ay: Float, bx: Float, by: Float, cx: Float, cy: Float): Float {
+            return (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
+        }
+        val cp1 = crossProduct(tl.x, tl.y, tr.x, tr.y, br.x, br.y)
+        val cp2 = crossProduct(tr.x, tr.y, br.x, br.y, bl.x, bl.y)
+        val cp3 = crossProduct(br.x, br.y, bl.x, bl.y, tl.x, tl.y)
+        val cp4 = crossProduct(bl.x, bl.y, tl.x, tl.y, tr.x, tr.y)
+        
+        val allPositive = cp1 > 0f && cp2 > 0f && cp3 > 0f && cp4 > 0f
+        val allNegative = cp1 < 0f && cp2 < 0f && cp3 < 0f && cp4 < 0f
+        return allPositive || allNegative
+    }
+
     // RANSAC Horizontal Line fitting (y = m * x + c)
     private fun fitLineYasX(points: List<Pair<Float, Float>>, tolerance: Float): Pair<Float, Float>? {
         if (points.size < 2) return null
@@ -278,7 +418,7 @@ object ScannerProcessor {
         var maxInliers = -1
         val rand = java.util.Random(42)
         
-        val numIterations = min(35, points.size * (points.size - 1) / 2).coerceAtLeast(15)
+        val numIterations = min(40, points.size * (points.size - 1) / 2).coerceAtLeast(20)
         for (i in 0 until numIterations) {
             val p1 = points[rand.nextInt(points.size)]
             val p2 = points[rand.nextInt(points.size)]
@@ -287,6 +427,8 @@ object ScannerProcessor {
             if (Math.abs(dx) < 1e-4f) continue
             
             val m = (p2.second - p1.second) / dx
+            if (Math.abs(m) > 1.3f) continue // constrain horizontal lines to proper horizontal-ish boundary
+            
             val c = p1.second - m * p1.first
             
             var inliers = 0
@@ -302,12 +444,11 @@ object ScannerProcessor {
             }
         }
         
-        // Non-linear least-squares consensus refinement on inliers
         if (maxInliers >= 2) {
-            var sumX = 0f
-            var sumY = 0f
-            var sumXY = 0f
-            var sumXX = 0f
+            var sumX = 0.0
+            var sumY = 0.0
+            var sumXY = 0.0
+            var sumXX = 0.0
             var count = 0
             for (p in points) {
                 if (Math.abs(p.second - (bestM * p.first + bestC)) < tolerance) {
@@ -319,9 +460,9 @@ object ScannerProcessor {
                 }
             }
             val denom = count * sumXX - sumX * sumX
-            if (Math.abs(denom) > 1e-4f) {
-                val m = (count * sumXY - sumX * sumY) / denom
-                val c = (sumY - m * sumX) / count
+            if (Math.abs(denom) > 1e-4) {
+                val m = ((count * sumXY - sumX * sumY) / denom).toFloat()
+                val c = ((sumY - m * sumX) / count).toFloat()
                 return Pair(m, c)
             }
         }
@@ -336,7 +477,7 @@ object ScannerProcessor {
         var maxInliers = -1
         val rand = java.util.Random(42)
         
-        val numIterations = min(35, points.size * (points.size - 1) / 2).coerceAtLeast(15)
+        val numIterations = min(40, points.size * (points.size - 1) / 2).coerceAtLeast(20)
         for (i in 0 until numIterations) {
             val p1 = points[rand.nextInt(points.size)]
             val p2 = points[rand.nextInt(points.size)]
@@ -345,6 +486,8 @@ object ScannerProcessor {
             if (Math.abs(dy) < 1e-4f) continue
             
             val m = (p2.first - p1.first) / dy
+            if (Math.abs(m) > 1.3f) continue // constrain vertical lines to proper vertical-ish boundary
+            
             val c = p1.first - m * p1.second
             
             var inliers = 0
@@ -361,10 +504,10 @@ object ScannerProcessor {
         }
         
         if (maxInliers >= 2) {
-            var sumX = 0f
-            var sumY = 0f
-            var sumXY = 0f
-            var sumYY = 0f
+            var sumX = 0.0
+            var sumY = 0.0
+            var sumXY = 0.0
+            var sumYY = 0.0
             var count = 0
             for (p in points) {
                 if (Math.abs(p.first - (bestM * p.second + bestC)) < tolerance) {
@@ -376,9 +519,9 @@ object ScannerProcessor {
                 }
             }
             val denom = count * sumYY - sumY * sumY
-            if (Math.abs(denom) > 1e-4f) {
-                val m = (count * sumXY - sumX * sumY) / denom
-                val c = (sumX - m * sumY) / count
+            if (Math.abs(denom) > 1e-4) {
+                val m = ((count * sumXY - sumX * sumY) / denom).toFloat()
+                val c = ((sumX - m * sumY) / count).toFloat()
                 return Pair(m, c)
             }
         }
@@ -596,8 +739,69 @@ object ScannerProcessor {
         }
         
         val dest = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        dest.setPixels(out, 0, w, 0, 0, w, h)
+        val finalOut = if (isMagicMode) {
+            applyLaplacianSharpening(out, w, h, strength = 0.35f)
+        } else {
+            out
+        }
+        dest.setPixels(finalOut, 0, w, 0, 0, w, h)
         return dest
+    }
+
+    private fun applyLaplacianSharpening(pixels: IntArray, w: Int, h: Int, strength: Float): IntArray {
+        val out = IntArray(w * h)
+        // copy borders of original image
+        for (x in 0 until w) {
+            out[x] = pixels[x]
+            out[(h - 1) * w + x] = pixels[(h - 1) * w + x]
+        }
+        for (y in 0 until h) {
+            out[y * w] = pixels[y * w]
+            out[y * w + (w - 1)] = pixels[y * w + (w - 1)]
+        }
+        
+        for (y in 1 until h - 1) {
+            for (x in 1 until w - 1) {
+                val idx = y * w + x
+                
+                val p = pixels[idx]
+                val r = (p shr 16) and 0xff
+                val g = (p shr 8) and 0xff
+                val b = p and 0xff
+                
+                val pT = pixels[idx - w]
+                val rT = (pT shr 16) and 0xff
+                val gT = (pT shr 8) and 0xff
+                val bT = pT and 0xff
+                
+                val pB = pixels[idx + w]
+                val rB = (pB shr 16) and 0xff
+                val gB = (pB shr 8) and 0xff
+                val bB = pB and 0xff
+                
+                val pL = pixels[idx - 1]
+                val rL = (pL shr 16) and 0xff
+                val gL = (pL shr 8) and 0xff
+                val bL = pL and 0xff
+                
+                val pR = pixels[idx + 1]
+                val rR = (pR shr 16) and 0xff
+                val gR = (pR shr 8) and 0xff
+                val bR = pR and 0xff
+                
+                // Laplacian component = 4*self - (top + bottom + left + right)
+                val lapR = 4 * r - (rT + rB + rL + rR)
+                val lapG = 4 * g - (gT + gB + gL + gR)
+                val lapB = 4 * b - (bT + bB + bL + bR)
+                
+                val sR = (r + strength * lapR).toInt().coerceIn(0, 255)
+                val sG = (g + strength * lapG).toInt().coerceIn(0, 255)
+                val sB = (b + strength * lapB).toInt().coerceIn(0, 255)
+                
+                out[idx] = 0xFF000000.toInt() or (sR shl 16) or (sG shl 8) or sB
+            }
+        }
+        return out
     }
 
     private fun stretchContrast(v: Int, low: Int, high: Int): Int {
