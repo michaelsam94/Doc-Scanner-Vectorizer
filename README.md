@@ -1,21 +1,89 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Doc Scanner & Vectorizer
 
-# Run and deploy your AI Studio app
+Native Android document scanner that captures paper pages, applies cleanup filters, saves scan history, and exports SVG vectors.
 
-This contains everything you need to run your app locally.
+## App Details
 
-View your app in AI Studio: https://ai.studio/apps/e90f6a03-7381-494f-b046-3e2931033149
+- Package: `com.michael.docscannervectorizer`
+- Version: `1.0.2` (`versionCode 3`)
+- Minimum SDK: `24`
+- Target SDK: `35`
+- UI: Jetpack Compose
+- Camera: CameraX
+- Signing: release AAB uses the archived upload key in `~/Desktop/playstore-keys/Doc-Scanner-Vectorizer/`
 
-## Run Locally
+## Features
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+- Live document boundary tracking with CameraX
+- Manual capture fallback
+- Perspective-corrected document scans
+- Paper cleanup filters: Original, Grayscale, Monochrome, Shadow Removed, and Magic Color
+- Saved scan history with notes
+- PNG sharing
+- SVG vector export
+- Gallery import for existing images
 
+## Project Structure
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+```text
+app/                         Android app module
+app/src/main/java/           Kotlin source
+app/src/test/java/           Unit and Play Store screenshot tests
+play-store/                  Play Console graphics and listing copy
+gradle/libs.versions.toml    Dependency and plugin versions
+```
+
+## Build
+
+Use JDK 17.
+
+```bash
+JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.19/libexec/openjdk.jdk/Contents/Home ./gradlew testDebugUnitTest --no-configuration-cache
+```
+
+Build a signed release bundle:
+
+```bash
+JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.19/libexec/openjdk.jdk/Contents/Home \
+  bash ~/.codex/skills/generate-signed-aab/scripts/generate-signed-aab.sh \
+  --project-name "Doc-Scanner-Vectorizer" \
+  --reuse-existing .
+```
+
+Output:
+
+```text
+app/build/outputs/bundle/release/app-release.aab
+```
+
+## Play Store Assets
+
+Generated assets are in `play-store/`:
+
+- `app-icon-512.png`
+- `feature-graphic.png`
+- `phone/*.png`
+- `tablet/*.png`
+- `listing-descriptions.md`
+
+Regenerate assets:
+
+```bash
+JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.19/libexec/openjdk.jdk/Contents/Home ./gradlew generatePlayStoreAssets --no-configuration-cache
+bash ~/.codex/skills/generate-app-assets/scripts/verify-play-store-assets.sh .
+```
+
+## Release Notes
+
+The current release targets API 35 and uses CameraX `1.4.2` with native libraries rebuilt for 16 KB memory page size support. The release bundle is built with Android Gradle Plugin `8.6.1`.
+
+## Secrets
+
+Do not commit signing files or local machine config:
+
+- `key.properties`
+- `*.jks`
+- `*.keystore`
+- `local.properties`
+
+Release signing material is stored separately in the private `playstore-keys` archive.
