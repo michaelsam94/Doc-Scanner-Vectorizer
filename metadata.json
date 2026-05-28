@@ -1,0 +1,6 @@
+{
+  "name": "Doc Scanner & Vectorizer",
+  "description": "A high-performance document scanner that crops, filters, and vectorizes paper line-art and text documents directly on device.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
