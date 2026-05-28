@@ -69,6 +69,33 @@ object ScannerProcessor {
         // Adaptive paper binarization threshold based on ambient highlight luminance
         val paperThreshold = (p80Luminance * 0.72f).coerceIn(85f, 175f).toInt()
         
+        // Calculate Otsu Adaptive threshold for extreme noise binarization
+        val total = sw * sh
+        var sum = 0f
+        for (t in 0..255) {
+            sum += t * hist[t]
+        }
+        var sumB = 0f
+        var wB = 0
+        var varMax = 0f
+        var thresholdOtsu = 127
+        for (t in 0..255) {
+            wB += hist[t]
+            if (wB == 0) continue
+            val wF = total - wB
+            if (wF == 0) break
+            sumB += t * hist[t].toFloat()
+            val mB = sumB / wB
+            val mF = (sum - sumB) / wF
+            val varBetween = wB.toFloat() * wF.toFloat() * (mB - mF) * (mB - mF)
+            if (varBetween > varMax) {
+                varMax = varBetween
+                thresholdOtsu = t
+            }
+        }
+        
+        val adaptiveThreshold = min(paperThreshold, thresholdOtsu.coerceIn(80, 180))
+        
         // High-contrast Sobel gradient space
         val grad = FloatArray(sw * sh)
         var maxGrad = 0f
@@ -94,7 +121,7 @@ object ScannerProcessor {
         for (i in gray.indices) {
             val gVal = gray[i]
             val sVal = sat[i]
-            isWhitePaper[i] = (gVal >= paperThreshold && sVal < 0.32f) || (gVal > 185 && sVal < 0.40f)
+            isWhitePaper[i] = (gVal >= adaptiveThreshold && sVal < 0.32f) || (gVal > 185 && sVal < 0.40f)
         }
         
         // Ignore thin outer border (3.5%) to ignore user's holding fingers/frame bezels
@@ -155,81 +182,80 @@ object ScannerProcessor {
                 blobSet[idx] = true
             }
             
-            // Collect perimeter contour points of the blob
-            val perimeter = ArrayList<Pair<Int, Int>>()
-            for (idx in maxComponent) {
-                val cx = idx % sw
-                val cy = idx / sw
-                if (cx > marginW && cx < sw - marginW - 1 && cy > marginH && cy < sh - marginH - 1) {
-                    val isPerimeter = !blobSet[idx - 1] || !blobSet[idx + 1] || 
-                                      !blobSet[idx - sw] || !blobSet[idx + sw]
-                    if (isPerimeter) {
-                        perimeter.add(Pair(cx, cy))
+            // Scan columns to collect Top and Bottom outline borders
+            val topPoints = ArrayList<Pair<Float, Float>>()
+            val bottomPoints = ArrayList<Pair<Float, Float>>()
+            for (x in marginW until sw - marginW) {
+                var firstY = -1
+                var lastY = -1
+                for (y in marginH until sh - marginH) {
+                    if (blobSet[y * sw + x]) {
+                        if (firstY == -1) firstY = y
+                        lastY = y
                     }
-                } else {
-                    perimeter.add(Pair(cx, cy))
+                }
+                if (firstY != -1) {
+                    topPoints.add(Pair(x.toFloat(), firstY.toFloat()))
+                    bottomPoints.add(Pair(x.toFloat(), lastY.toFloat()))
                 }
             }
             
-            if (perimeter.size >= 8) {
-                // Determine 4 global projection extremes (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
-                var minSum = Float.MAX_VALUE
-                var maxSum = -Float.MAX_VALUE
-                var minDiff = Float.MAX_VALUE
-                var maxDiff = -Float.MAX_VALUE
-                
-                var tlX = sw * 0.15f
-                var tlY = sh * 0.15f
-                var trX = sw * 0.85f
-                var trY = sh * 0.15f
-                var brX = sw * 0.85f
-                var brY = sh * 0.85f
-                var blX = sw * 0.15f
-                var blY = sh * 0.85f
-                
-                for (pt in perimeter) {
-                    val px = pt.first.toFloat()
-                    val py = pt.second.toFloat()
-                    val sum = px + py
-                    val diff = px - py
-                    
-                    if (sum < minSum) {
-                        minSum = sum
-                        tlX = px
-                        tlY = py
-                    }
-                    if (sum > maxSum) {
-                        maxSum = sum
-                        brX = px
-                        brY = py
-                    }
-                    if (diff > maxDiff) {
-                        maxDiff = diff
-                        trX = px
-                        trY = py
-                    }
-                    if (diff < minDiff) {
-                        minDiff = diff
-                        blX = px
-                        blY = py
+            // Scan rows to collect Left and Right outline borders
+            val leftPoints = ArrayList<Pair<Float, Float>>()
+            val rightPoints = ArrayList<Pair<Float, Float>>()
+            for (y in marginH until sh - marginH) {
+                var firstX = -1
+                var lastX = -1
+                for (x in marginW until sw - marginW) {
+                    if (blobSet[y * sw + x]) {
+                        if (firstX == -1) firstX = x
+                        lastX = x
                     }
                 }
+                if (firstX != -1) {
+                    leftPoints.add(Pair(firstX.toFloat(), y.toFloat()))
+                    rightPoints.add(Pair(lastX.toFloat(), y.toFloat()))
+                }
+            }
+            
+            // Fit robust boundaries using RANSAC to completely reject clutter, fingers, and background transitions
+            val topLine = fitLineYasX(topPoints, tolerance = 2.5f)
+            val bottomLine = fitLineYasX(bottomPoints, tolerance = 2.5f)
+            val leftLine = fitLineXasY(leftPoints, tolerance = 2.5f)
+            val rightLine = fitLineXasY(rightPoints, tolerance = 2.5f)
+            
+            if (topLine != null && bottomLine != null && leftLine != null && rightLine != null) {
+                val (mT, cT) = topLine
+                val (mB, cB) = bottomLine
+                val (mL, cL) = leftLine
+                val (mR, cR) = rightLine
                 
-                // Micro-refining: Snap each coordinate to local sharpest Sobel gradient
-                val refTL = refineCornerWithGradient(tlX, tlY, sw, sh, grad, searchRadius = 7)
-                val refTR = refineCornerWithGradient(trX, trY, sw, sh, grad, searchRadius = 7)
-                val refBR = refineCornerWithGradient(brX, brY, sw, sh, grad, searchRadius = 7)
-                val refBL = refineCornerWithGradient(blX, blY, sw, sh, grad, searchRadius = 7)
+                // Solve mathematical intersection of 4 straight lines to produce mathematically pure corners
+                val denomTL = 1f - mL * mT
+                val tlX = if (Math.abs(denomTL) > 1e-4f) (mL * cT + cL) / denomTL else cL
+                val tlY = mT * tlX + cT
                 
-                // Normalize and add custom crop padding clearance
+                val denomTR = 1f - mR * mT
+                val trX = if (Math.abs(denomTR) > 1e-4f) (mR * cT + cR) / denomTR else cR
+                val trY = mT * trX + cT
+                
+                val denomBL = 1f - mL * mB
+                val blX = if (Math.abs(denomBL) > 1e-4f) (mL * cB + cL) / denomBL else cL
+                val blY = mB * blX + cB
+                
+                val denomBR = 1f - mR * mB
+                val brX = if (Math.abs(denomBR) > 1e-4f) (mR * cB + cR) / denomBR else cR
+                val brY = mB * brX + cB
+                
+                // Relative normal coordinates within viewport
                 val normX = 1f / sw
                 val normY = 1f / sh
                 val pad = 0.012f
                 
-                val pTL = DocPoint((refTL.first * normX - pad).coerceIn(0f, 0.9f), (refTL.second * normY - pad).coerceIn(0f, 0.9f))
-                val pTR = DocPoint((refTR.first * normX + pad).coerceIn(0.1f, 1f), (refTR.second * normY - pad).coerceIn(0f, 0.9f))
-                val pBR = DocPoint((refBR.first * normX + pad).coerceIn(0.1f, 1f), (refBR.second * normY + pad).coerceIn(0.1f, 1f))
-                val pBL = DocPoint((refBL.first * normX - pad).coerceIn(0f, 0.9f), (refBL.second * normY + pad).coerceIn(0.1f, 1f))
+                val pTL = DocPoint((tlX * normX - pad).coerceIn(0f, 0.9f), (tlY * normY - pad).coerceIn(0f, 0.9f))
+                val pTR = DocPoint((trX * normX + pad).coerceIn(0.1f, 1f), (trY * normY - pad).coerceIn(0f, 0.9f))
+                val pBR = DocPoint((brX * normX + pad).coerceIn(0.1f, 1f), (brY * normY + pad).coerceIn(0.1f, 1f))
+                val pBL = DocPoint((blX * normX - pad).coerceIn(0f, 0.9f), (blY * normY + pad).coerceIn(0.1f, 1f))
                 
                 val diag1 = hypot((pBR.x - pTL.x).toDouble(), (pBR.y - pTL.y).toDouble())
                 val diag2 = hypot((pTR.x - pBL.x).toDouble(), (pTR.y - pBL.y).toDouble())
@@ -244,41 +270,119 @@ object ScannerProcessor {
         return getResilientGradientFallback(sw, sh, gray, grad)
     }
     
-    private fun refineCornerWithGradient(
-        coarseX: Float, coarseY: Float, 
-        sw: Int, sh: Int, 
-        grad: FloatArray, 
-        searchRadius: Int
-    ): Pair<Float, Float> {
-        val cx = coarseX.toInt()
-        val cy = coarseY.toInt()
+    // RANSAC Horizontal Line fitting (y = m * x + c)
+    private fun fitLineYasX(points: List<Pair<Float, Float>>, tolerance: Float): Pair<Float, Float>? {
+        if (points.size < 2) return null
+        var bestM = 0f
+        var bestC = 0f
+        var maxInliers = -1
+        val rand = java.util.Random(42)
         
-        var bestX = coarseX
-        var bestY = coarseY
-        var maxScore = -1f
-        
-        for (dy in -searchRadius..searchRadius) {
-            for (dx in -searchRadius..searchRadius) {
-                val px = cx + dx
-                val py = cy + dy
-                if (px >= 0 && px < sw && py >= 0 && py < sh) {
-                    val idx = py * sw + px
-                    val gVal = grad[idx]
-                    
-                    // Gaussian-like distance decay to favor peaks closer to the original perimeter projection
-                    val distance = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
-                    val distFactor = if (distance > 0) 1.0f - (distance / (searchRadius * 1.5f)) else 1.0f
-                    val score = gVal * distFactor.coerceAtLeast(0.1f)
-                    
-                    if (score > maxScore) {
-                        maxScore = score
-                        bestX = px.toFloat()
-                        bestY = py.toFloat()
-                    }
+        val numIterations = min(35, points.size * (points.size - 1) / 2).coerceAtLeast(15)
+        for (i in 0 until numIterations) {
+            val p1 = points[rand.nextInt(points.size)]
+            val p2 = points[rand.nextInt(points.size)]
+            if (p1 == p2) continue
+            val dx = p2.first - p1.first
+            if (Math.abs(dx) < 1e-4f) continue
+            
+            val m = (p2.second - p1.second) / dx
+            val c = p1.second - m * p1.first
+            
+            var inliers = 0
+            for (p in points) {
+                if (Math.abs(p.second - (m * p.first + c)) < tolerance) {
+                    inliers++
                 }
             }
+            if (inliers > maxInliers) {
+                maxInliers = inliers
+                bestM = m
+                bestC = c
+            }
         }
-        return Pair(bestX, bestY)
+        
+        // Non-linear least-squares consensus refinement on inliers
+        if (maxInliers >= 2) {
+            var sumX = 0f
+            var sumY = 0f
+            var sumXY = 0f
+            var sumXX = 0f
+            var count = 0
+            for (p in points) {
+                if (Math.abs(p.second - (bestM * p.first + bestC)) < tolerance) {
+                    sumX += p.first
+                    sumY += p.second
+                    sumXY += p.first * p.second
+                    sumXX += p.first * p.first
+                    count++
+                }
+            }
+            val denom = count * sumXX - sumX * sumX
+            if (Math.abs(denom) > 1e-4f) {
+                val m = (count * sumXY - sumX * sumY) / denom
+                val c = (sumY - m * sumX) / count
+                return Pair(m, c)
+            }
+        }
+        return if (maxInliers > 0) Pair(bestM, bestC) else null
+    }
+
+    // RANSAC Vertical Line fitting (x = m * y + c)
+    private fun fitLineXasY(points: List<Pair<Float, Float>>, tolerance: Float): Pair<Float, Float>? {
+        if (points.size < 2) return null
+        var bestM = 0f
+        var bestC = 0f
+        var maxInliers = -1
+        val rand = java.util.Random(42)
+        
+        val numIterations = min(35, points.size * (points.size - 1) / 2).coerceAtLeast(15)
+        for (i in 0 until numIterations) {
+            val p1 = points[rand.nextInt(points.size)]
+            val p2 = points[rand.nextInt(points.size)]
+            if (p1 == p2) continue
+            val dy = p2.second - p1.second
+            if (Math.abs(dy) < 1e-4f) continue
+            
+            val m = (p2.first - p1.first) / dy
+            val c = p1.first - m * p1.second
+            
+            var inliers = 0
+            for (p in points) {
+                if (Math.abs(p.first - (m * p.second + c)) < tolerance) {
+                    inliers++
+                }
+            }
+            if (inliers > maxInliers) {
+                maxInliers = inliers
+                bestM = m
+                bestC = c
+            }
+        }
+        
+        if (maxInliers >= 2) {
+            var sumX = 0f
+            var sumY = 0f
+            var sumXY = 0f
+            var sumYY = 0f
+            var count = 0
+            for (p in points) {
+                if (Math.abs(p.first - (bestM * p.second + bestC)) < tolerance) {
+                    sumX += p.first
+                    sumY += p.second
+                    sumXY += p.first * p.second
+                    sumYY += p.second * p.second
+                    count++
+                }
+            }
+            val denom = count * sumYY - sumY * sumY
+            if (Math.abs(denom) > 1e-4f) {
+                val m = (count * sumXY - sumX * sumY) / denom
+                val c = (sumX - m * sumY) / count
+                return Pair(m, c)
+            }
+        }
+        return if (maxInliers > 0) Pair(bestM, bestC) else null
     }
     
     private fun getResilientGradientFallback(sw: Int, sh: Int, gray: IntArray, grad: FloatArray): DocumentCorners {
